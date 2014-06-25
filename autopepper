@@ -1,0 +1,40 @@
+#! /bin/bash
+
+AUTOPEP8="autopep8 -v -i --max-line-length=100"
+
+# find modified or added files
+pyfiles_in_git=`git status -s | grep "[MA] .*.py" | sed -n 's/.* \(.*\)/\1/p'`
+
+# find non-versioned files
+pyfiles_not_in_git=`git status -s | grep "?? .*.py" | sed -n 's/.* \(.*\)/\1/p'`
+
+# handle non versioned files
+for file in $pyfiles_not_in_git; do
+    cmd="$AUTOPEP8 $file"
+    echo "$ $cmd"
+    eval "$cmd"
+done;
+
+# handle git versioned files
+for file in $pyfiles_in_git; do
+    echo $file
+    lines=`git diff -U0 $file | sed -n 's/@@.* +\([0-9,]*\) @@.*/\1/p'`
+
+    OLDIFS=$IFS
+    IFS="
+    "
+    for i in $lines; do
+        start=`echo "$i" | cut -d ',' -f 1`
+        end=`echo $i, | cut -d ',' -f 2`
+        if [ -n "$end" ];then
+            end=`calc -p "$start+$end"`
+        else
+            end=$start
+        fi
+        cmd="$AUTOPEP8 --range $start $end $file"
+        echo "$ $cmd"
+        eval "$cmd"
+
+    done;
+    IFS=$OLDIFS
+done
