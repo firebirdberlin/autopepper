@@ -1,40 +1,169 @@
 #! /bin/bash
 
-AUTOPEP8="autopep8 -v -i --max-line-length=100"
+############################ S E T T I N G S ##################################
+AUTOPEP8_CMD="autopep8 -i --max-line-length=100  --ignore E309,E501,E128"
+PYFLAKES_CMD="pyflakes"
+ISORT_CMD="isort"
+EXCLUDE_FILE=".autopepper_excludes"
+###############################################################################
+
+# global variables
+commit=""
+verbosity=0
+process_function_context=0
+
+function verbose() {
+    message=$1
+    if [ ${verbosity} -ge 1 ]; then
+        echo $message;
+    fi
+}
+
+
+function execute() {
+    cmd=$1
+    verbose "$ $cmd"
+    eval "$cmd"
+    result=$?
+    if [ ${result} -ne 0 ]; then
+        echo "Error: $result";
+        exit $result;
+    fi
+}
+
+function set_exclude_defaults() {
+    if [ ! -f $EXCLUDE_FILE ]; then
+        echo "__init__.py" > $EXCLUDE_FILE
+        echo "helper.py" >> $EXCLUDE_FILE
+    fi
+}
+
+
+function load_excludes() {
+    set_exclude_defaults;
+
+    EXCLUDE=""
+    if [ -f $EXCLUDE_FILE ]; then
+        OLDIFS=$IFS
+        IFS=$'\n'
+        for EX in `cat $EXCLUDE_FILE`; do
+            EXCLUDE+=" | grep -v ${EX}"
+        done
+    IFS=$OLDIFS
+    fi
+    echo $EXCLUDE
+}
+
+################################## main #######################################
+
+while getopts ":c:v:hW?" opt; do
+  case $opt in
+    h)
+        echo "Sgt. Pepper's lonely pep8 fix tool"
+        echo -e " ... runs autopep8 only on changes you have made.\n"
+        echo -e "usage: $0 [-c <commit>] [-v [number]] [autopep8 parameters]"
+        echo -e "\t -c : the commit to compare to, e.g. 'master'"
+        echo -e "\t -v : verbosity\n"\
+                "\t\t1: autopepper messages only\n"\
+                "\t\t2: enable autopep8 verbose mode"
+        echo -e "\t -W : process function-context"
+        echo -e "\n$ autopep8 -h"
+        autopep8 -h
+        exit 0;
+        ;;
+    c)
+        commit=$OPTARG;
+        ;;
+    W)
+        process_function_context=1;
+        ;;
+    v)
+        verbosity=$OPTARG;
+        ;;
+    \?)
+        echo "Invalid option: -$OPTARG" >&2
+        exit 1
+        ;;
+    :)
+        echo "Option -$OPTARG requires an argument." >&2
+        exit 1
+        ;;
+  esac
+done
+
+# remove autopepper's opts
+shift $(( $OPTIND -1 ))
+
+# the remaining args are assumed to be autopep args
+AUTOPEP8_CMD="$AUTOPEP8_CMD $@"
+
+if [ ${verbosity} -ge 2 ]; then
+    AUTOPEP8_CMD+=" -v"
+fi
+
+DIFF_CMD="git diff ${commit} -U0"
+if [ ${process_function_context} -eq 1 ]; then
+    DIFF_CMD+=" -W"
+fi
+
+if [ -n "$commit" ]; then
+    verbose "Autopepping changes compared to '${commit}'"
+fi
 
 # find modified or added files
-pyfiles_in_git=`git status -s | grep "[MA] .*.py" | sed -n 's/.* \(.*\)/\1/p'`
+EXCLUDE=`load_excludes`
+cmd_pyfiles_in_git="git diff ${commit} --name-only --relative | grep '\.py$' ${EXCLUDE}"
+pyfiles_in_git=`eval $cmd_pyfiles_in_git`
 
 # find non-versioned files
-pyfiles_not_in_git=`git status -s | grep "?? .*.py" | sed -n 's/.* \(.*\)/\1/p'`
+cmd_pyfiles_not_in_git="git status -s | grep '?? .*.py$' | sed -n 's/.* \(.*\)/\1/p' ${EXCLUDE}"
+pyfiles_not_in_git=`eval $cmd_pyfiles_not_in_git`
+
+# execute pyflakes and isort ...
+for file in ${pyfiles_in_git} ${pyfiles_not_in_git}; do
+    if [ -f ${file} ]; then
+        execute "${PYFLAKES_CMD} $file"
+        execute "${ISORT_CMD} $file"
+    fi;
+done;
+
+exit
+
+# execute autopep8
 
 # handle non versioned files
-for file in $pyfiles_not_in_git; do
-    cmd="$AUTOPEP8 $file"
-    echo "$ $cmd"
-    eval "$cmd"
+for file in ${pyfiles_not_in_git}; do
+    verbose " -- $file"
+    execute "${AUTOPEP8_CMD} $file"
 done;
 
 # handle git versioned files
-for file in $pyfiles_in_git; do
-    echo $file
-    lines=`git diff -U0 $file | sed -n 's/@@.* +\([0-9,]*\) @@.*/\1/p'`
+for file in ${pyfiles_in_git}; do
 
-    OLDIFS=$IFS
-    IFS="
-    "
-    for i in $lines; do
-        start=`echo "$i" | cut -d ',' -f 1`
-        end=`echo $i, | cut -d ',' -f 2`
+    # ignore non-existing files
+    if [ ! -f $file ]; then
+        continue;
+    fi
+
+    verbose " -- ${DIFF_CMD} $file"
+
+    # determine all chunks to be edited ...
+    chunks=(`${DIFF_CMD} $file | sed -n 's/@@.* +\([0-9,]*\) @@.*/\1/p'`)
+
+    num_chunks=`expr ${#chunks[@]} - 1`
+    for chunk in `seq $num_chunks -1 0`; do
+        # load the range of lines
+        range=${chunks[${chunk}]}
+
+        # conversion for autopep8
+        start=`echo "${range}" | cut -d ',' -f 1`
+        end=`echo ${range}, | cut -d ',' -f 2`
         if [ -n "$end" ];then
-            end=`calc -p "$start+$end"`
+            end=`expr $start + $end`
         else
             end=$start
         fi
-        cmd="$AUTOPEP8 --range $start $end $file"
-        echo "$ $cmd"
-        eval "$cmd"
 
+        execute "${AUTOPEP8_CMD} --range $start $end $file"
     done;
-    IFS=$OLDIFS
 done
